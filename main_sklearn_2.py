@@ -1,7 +1,7 @@
 ######### load csv data #########
 import pandas as pd
+import numpy as np
 df = pd.read_csv('./data/train_v2.csv')
-df = df.rename({'title':'text'}, axis=1)
 df_test = pd.read_csv('./data/test_v2.csv')
 # 4    2726
 # 2    1701
@@ -10,10 +10,10 @@ df_test = pd.read_csv('./data/test_v2.csv')
 # 1     349
 
 # map publisher
-publishers = pd.concat((df, df_test), sort=True).drop_duplicates('publisher')['publisher']
-index_to_publisher = publishers.to_dict()
-publisher_to_index = {index_to_publisher[k]: k for k in index_to_publisher}
-df['publisher'] = df['publisher'].apply(lambda x: x.map(publisher_to_index.get(x)))
+# publishers = pd.concat((df, df_test), sort=True).drop_duplicates('publisher')['publisher']
+# index_to_publisher = publishers.to_dict()
+# publisher_to_index = {index_to_publisher[k]: k for k in index_to_publisher}
+# df['publisher'] = df['publisher'].apply(lambda x: publisher_to_index.get(x))
 
 
 # train class 0,1,2,3 first?
@@ -29,165 +29,82 @@ train_v2_dir = './articles/train_v2/'
 
 
 def load_train_dataset(use_title_only = True, type = 'summary', include_download_fail = False):
+    x_columns = ['text', 'publisher']
+    y_column = ['category']
     if use_title_only:
         print ('use title only')
-        X = df[['text', 'publisher']]
-        Y = list(df['category'])
+        X = df[['title', 'publisher']]
+        X.columns = x_columns
+        Y = df[y_column]
 
     else:
-        X = []
-        Y = []
+        X, Y = [], []
         if type == 'summary':
             print('use article summary')
-            for article_id, category, title in zip(df['article_id'], df['category'], df['title']):
+            for article_id, category, title, publisher in zip(df['article_id'], df['category'], df['title'], df['publisher']):
                 if os.path.exists(train_v2_dir+'%d_summary.txt'%article_id):
                     with open(train_v2_dir+'%d_summary.txt'%article_id, 'r', encoding='utf-8') as f:
                         reader = csv.reader(f)
-                        X.append(title+'\n'+next(reader)[0])
+                        text = title+'\n'+next(reader)[0]
+                        X.append([text, publisher])
                         Y.append(category)
                 elif include_download_fail:
-                    X.append(title)
+                    text = title
+                    X.append([text, publisher])
                     Y.append(category)
+
         else:
             print('use article text')
-            for article_id, category, title in zip(df['article_id'], df['category'], df['title']):
+            for article_id, category, title, publisher in zip(df['article_id'], df['category'], df['title'],
+                                                              df['publisher']):
                 if os.path.exists(train_v2_dir+'%d_text.txt'%article_id):
                     with open(train_v2_dir+'%d_text.txt'%article_id, 'r', encoding='utf-8') as f:
                         reader = csv.reader(f)
-                        X.append(title+'\n'+next(reader)[0])
+                        text = title + '\n' + next(reader)[0]
+                        X.append([text, publisher])
                         Y.append(category)
                 elif include_download_fail:
-                    X.append(title)
+                    text = title
+                    X.append([text, publisher])
                     Y.append(category)
+        X = pd.DataFrame(X, columns=x_columns)
+        Y = pd.DataFrame(Y, columns=y_column)
+    Y = Y['category']
     print('using {0} training data'.format(len(X)))
-    for i in range(0, 5):
-        print('class {0}: {1}'.format(i, Y.count(i)))
-    return X, Y
+    print(Y.value_counts())
+    return X, list(Y)
 
 
 from sklearn.model_selection import train_test_split
-X, Y = load_train_dataset(use_title_only=True, type='summary', include_download_fail=False)
+X, Y = load_train_dataset(use_title_only=False, type='text', include_download_fail=True)
 X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.20)
 
 
 ############## preprocess(hacking TfidfVectorizer) ################
-stopwords = []
-with open('stopwords.txt', 'r') as f:
-    reader = csv.reader(f)
-    for r in reader:
-        stopwords.append(r[0])
+from custom_transformers import TextTfidfVectorizer, PublisherTfidfVectorizer,NumberOfWordsExtractor
 
+vect = TextTfidfVectorizer(ngram_range=(1,3), max_df=.95, min_df=.0025, use_idf=True, norm='l2')
 
-import unicodedata, re
-from nltk import PorterStemmer, WordNetLemmatizer, pos_tag
-from nltk.corpus import wordnet
+########### fit all data
+vect.fit(X, y=None)
 
-from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer, TfidfVectorizer
-class MyTfidfVectorizer(TfidfVectorizer):
-    def build_analyzer(self):
-        def remove_invalid(text):
-            return re.sub(u'[•₹€–—�►©!“”"’✓#$%&\'()*+,-./:;<=>?@，。?★、…[\\]^_`{|}~]+', ' ', text)
-
-        def get_wordnet_pos(treebank_tag):
-            if treebank_tag.startswith('J'):
-                return wordnet.ADJ
-            elif treebank_tag.startswith('V'):
-                return wordnet.VERB
-            elif treebank_tag.startswith('N'):
-                return wordnet.NOUN
-            elif treebank_tag.startswith('R'):
-                return wordnet.ADV
-            else:
-                return None  # for easy if-statement
-
-        def lemmer(words):
-            lemmatizer = WordNetLemmatizer()
-            tagged = pos_tag(words)
-            lemmed_words = []
-            for word, tag in tagged:
-                wntag = get_wordnet_pos(tag)
-                if wntag is None:  # not supply tag in case of None
-                    lemma = lemmatizer.lemmatize(word)
-                else:
-                    lemma = lemmatizer.lemmatize(word, pos=wntag)
-                lemmed_words.append(lemma)
-            return lemmed_words
-
-        def stemmer(words):
-            return [PorterStemmer().stem(word) for word in words]
-
-        def normalize(words):
-            return [''.join((char for char in unicodedata.normalize('NFD', str(word)) if unicodedata.category(char) != 'Mn'))
-                    for word in words]
-
-        def is_all_digit(feature):
-            words = feature.split(' ')
-            for word in words:
-                if not word.isdigit():
-                    return False
-            return True
-
-        def analyser(text):
-            text = text.lower()
-            text = remove_invalid(text)
-
-            words = text.split()
-            words = normalize(words)
-            words = lemmer(words)
-            features = self._word_ngrams(words, stopwords)
-
-            # feature selection: remove those with only one number or two numbers
-            selected_features = [feature for feature in features if not is_all_digit(feature)]
-            return selected_features
-        return analyser
-
-    def transform(self, X):
-        X_texts = X['text']
-        X_texts = super(TfidfVectorizer, self).transform(X_texts)
-        return self._tfidf.transform(X_texts, copy=False)
-
-    def fit(self, X, y):
-        X_texts = X['text']
-        self._check_params()
-        X_texts = super(TfidfVectorizer, self).fit_transform(X_texts)
-        self._tfidf.fit(X_texts)
-        return self
-
-    def fit_transform(self, X, y=None):
-        X_texts = X['text']
-        self._check_params()
-        X_texts = super(TfidfVectorizer, self).fit_transform(X_texts)
-        self._tfidf.fit(X_texts)
-        return self._tfidf.transform(X_texts, copy=False)
-
-
-
-vect = MyTfidfVectorizer(ngram_range=(1,3), max_df=.95, use_idf=True, norm='l2')
-X_train_tdidf = vect.fit_transform(X_train, y_train)
-X_test_tdidf = vect.transform(X_test)
+########### fit training data
+#vect.fit(X_train, y=None)
 
 features = vect.get_feature_names()
+for feature in features:
+    print(feature)
 print('feature counts: {0}'.format(len(features)))
-# for feature in features:
-#     print(feature)
-
-from sklearn.svm import LinearSVC
-from sklearn.pipeline import Pipeline, FeatureUnion
-# pipe = Pipeline([
-#     ('features', FeatureUnion([
-#         ('tf_idf', MyTfidfVectorizer(ngram_range=(1,3), max_df=.95, use_idf=True, norm='l2')),
-#         ('text_length', Map)
-#     ])),
-#     ('clf', LinearSVC())
-# ])
 
 ##################### model selection and training ##################
 
 from sklearn.svm import LinearSVC, SVC
+from sklearn.model_selection import GridSearchCV
 from sklearn.naive_bayes import GaussianNB, MultinomialNB
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, precision_score, classification_report, confusion_matrix, roc_auc_score
-
+from sklearn.metrics import accuracy_score, precision_score, classification_report, confusion_matrix, roc_auc_score, make_scorer, f1_score
+from sklearn.pipeline import Pipeline, FeatureUnion
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier, GradientBoostingClassifier
 
 def print_scores(y_test, preds, y_train, preds_train):
     print("Accuracy test:", accuracy_score(y_test, preds))
@@ -195,8 +112,50 @@ def print_scores(y_test, preds, y_train, preds_train):
     print(classification_report(y_test, preds))
     print(confusion_matrix(y_test, preds))
 
+run_gridcv = False
+if run_gridcv:
+    params = [{
+        # 'features__transformer_weights': [[1, 0.2, 0.2],[1, 1, 1],[1, 0.5, 0.2]],
+        'features__text__ngram_range':[(1,2), (1,3), (1,4)],
+        'features__text__max_df':[0.95, 0.9, 0.85],
+        'features__text__max_features': [1000, 3000, 5000, 10000, 20000],
+        'features__publisher__ngram_range': [(1, 1), (1, 2)],
+        'features__publisher__max_df': [0.95, 0.9, 0.85],
+        'gbc__n_estimators':[10, 50, 100]
+
+    }]
+
+    scoring = {'Accuracy': make_scorer(accuracy_score), 'F1': 'f1_micro'}
+
+    pipe = Pipeline([
+        ('features', FeatureUnion([
+            ('text', vect),
+            ('publisher', PublisherTfidfVectorizer(ngram_range=(1, 1), max_df=.95, use_idf=True, norm='l2')),
+            ('word_counts', NumberOfWordsExtractor('text'))
+        ], transformer_weights=None)),
+        ('gbc', GradientBoostingClassifier())
+    ])
+
+    # grid_search = pipe
+    # grid_search.fit(X_train, y_train)
+
+    grid_search = GridSearchCV(pipe, params, n_jobs=-1, verbose=1, scoring=scoring, refit='F1', cv=5)
+    grid_search.fit(X_train, y_train)
+    print ('Best score: %0.3f' % grid_search.best_score_)
+    print ('Best parameters set:')
+    best_parameters = grid_search.best_estimator_.get_params()
+    print (best_parameters)
+
+    preds = grid_search.predict(X_test)
+    preds_train = grid_search.predict(X_train)
+    print_scores(y_test, preds, y_train, preds_train)
+
+
 run = True
 if run:
+    X_train_tdidf = vect.transform(X_train)
+    X_test_tdidf = vect.transform(X_test)
+
     print ('******** linear SVC ********')
     clf1 = SVC(kernel='linear', probability=True)
     clf1 = clf1.fit(X_train_tdidf, y_train)
@@ -265,48 +224,55 @@ if run:
 
 
 ####################### imbalance learn ####################################
-print ('****************** imbalance learn ****************')
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.over_sampling import RandomOverSampler
-from imblearn.combine import SMOTEENN
-from imblearn.ensemble import BalancedRandomForestClassifier, BalancedBaggingClassifier
-from imblearn.pipeline import make_pipeline as make_pipeline_imb
-from imblearn.metrics import classification_report_imbalanced
-print ('************** RandomUnderSampler ***********')
-pipe = make_pipeline_imb(RandomUnderSampler(),
-                         RandomForestClassifier())
-pipe.fit(X_train_tdidf, y_train)
-preds = pipe.predict(X_test_tdidf)
-preds_train = pipe.predict(X_train_tdidf)
-print(classification_report_imbalanced(y_test, preds))
+imb_run = True
+if imb_run:
+    print ('****************** imbalance learn ****************')
+    from imblearn.under_sampling import RandomUnderSampler
+    from imblearn.over_sampling import RandomOverSampler
+    from imblearn.combine import SMOTEENN
+    from imblearn.ensemble import BalancedRandomForestClassifier, BalancedBaggingClassifier
+    from imblearn.pipeline import make_pipeline as make_pipeline_imb
+    from imblearn.metrics import classification_report_imbalanced
+    clf = RandomForestClassifier()
+    print ('************** RandomUnderSampler ***********')
+    pipe = make_pipeline_imb(vect,
+                             RandomUnderSampler(random_state=777),
+                             clf)
+    pipe.fit(X_train, y_train)
+    preds = pipe.predict(X_test)
+    preds_train = pipe.predict(X_train)
+    print(classification_report_imbalanced(y_test, preds))
 
-print ('************** RandomOverSampler ***********')
-pipe = make_pipeline_imb(RandomOverSampler(),
-                         RandomForestClassifier())
-pipe.fit(X_train_tdidf, y_train)
-preds = pipe.predict(X_test_tdidf)
-preds_train = pipe.predict(X_train_tdidf)
-print(classification_report_imbalanced(y_test, preds))
+    print ('************** RandomOverSampler ***********')
+    pipe = make_pipeline_imb(vect,
+                             RandomOverSampler(random_state=777),
+                             clf)
+    pipe.fit(X_train, y_train)
+    preds = pipe.predict(X_test)
+    preds_train = pipe.predict(X_train)
+    print(classification_report_imbalanced(y_test, preds))
 
-print ('************** SMOTEENN(combine) ***********')
-pipe = make_pipeline_imb(SMOTEENN(random_state=42),
-                         RandomForestClassifier())
-pipe.fit(X_train_tdidf, y_train)
-preds = pipe.predict(X_test_tdidf)
-preds_train = pipe.predict(X_train_tdidf)
-print(classification_report_imbalanced(y_test, preds))
+    print ('************** SMOTEENN(combine) ***********')
+    pipe = make_pipeline_imb(vect,
+                             SMOTEENN(random_state=42),
+                             clf)
+    pipe.fit(X_train, y_train)
+    preds = pipe.predict(X_test)
+    preds_train = pipe.predict(X_train)
+    print(classification_report_imbalanced(y_test, preds))
 
-print ('************** BalancedRandomForestClassifier(ensemble) ***********')
-pipe = make_pipeline_imb(BalancedRandomForestClassifier(max_depth=40))
-pipe.fit(X_train_tdidf, y_train)
-preds = pipe.predict(X_test_tdidf)
-preds_train = pipe.predict(X_train_tdidf)
-print(classification_report_imbalanced(y_test, preds))
+    print ('************** BalancedRandomForestClassifier(ensemble) ***********')
+    pipe = make_pipeline_imb(vect,
+                             BalancedRandomForestClassifier(max_depth=40))
+    pipe.fit(X_train, y_train)
+    preds = pipe.predict(X_test)
+    preds_train = pipe.predict(X_train)
+    print(classification_report_imbalanced(y_test, preds))
 
-print ('************** BalancedBaggingClassifier(ensemble) ***********')
-pipe = make_pipeline_imb(CountVectorizer(),
-                         BalancedBaggingClassifier(random_state=42))
-pipe.fit(X_train, y_train)
-preds = pipe.predict(X_test)
-preds_train = pipe.predict(X_train)
-print(classification_report_imbalanced(y_test, preds))
+    print ('************** BalancedBaggingClassifier(ensemble) ***********')
+    pipe = make_pipeline_imb(vect,
+                             BalancedBaggingClassifier(random_state=42))
+    pipe.fit(X_train, y_train)
+    preds = pipe.predict(X_test)
+    preds_train = pipe.predict(X_train)
+    print(classification_report_imbalanced(y_test, preds))
