@@ -1,10 +1,14 @@
 import pandas as pd
-df = pd.read_csv('./data/train_v2.csv')[2334:]
+# df = pd.read_csv('./data/train_v2.csv')
+df = pd.read_csv('./data/test_v2.csv')
+
 article_ids = df['article_id']
 urls = df['url']
 
 import os
-directory = './articles/train_v2/'
+# directory = './articles/train_v2/'
+directory = './articles/test_v2/'
+
 if not os.path.exists(directory):
     os.makedirs(directory)
 
@@ -16,7 +20,7 @@ import time
 
 # increase timeout
 config = Config()
-config.request_timeout = 20
+config.request_timeout = 50
 # if request is not successful for 10 seconds, give up
 max_wait = 10
 for article_id, url in zip(article_ids, urls):

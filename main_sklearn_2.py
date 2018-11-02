@@ -1,8 +1,10 @@
 ######### load csv data #########
 import pandas as pd
-import numpy as np
 df = pd.read_csv('./data/train_v2.csv')
 df_test = pd.read_csv('./data/test_v2.csv')
+df = df.rename(columns={'title': 'text'})
+df_test = df_test.rename(columns={'title': 'text'})
+df_combined = pd.concat([df, df_test], sort=False)
 # 4    2726
 # 2    1701
 # 0     798
@@ -26,48 +28,47 @@ df_test = pd.read_csv('./data/test_v2.csv')
 ############# load training data #############
 import csv, os
 train_v2_dir = './articles/train_v2/'
+test_v2_dir = './articles/test_v2/'
 
 
 def load_train_dataset(use_title_only = True, type = 'summary', include_download_fail = False):
-    x_columns = ['text', 'publisher']
+    x_new_col = ['text', 'publisher']
     y_column = ['category']
     if use_title_only:
         print ('use title only')
-        X = df[['title', 'publisher']]
-        X.columns = x_columns
+        X = df[x_new_col]
         Y = df[y_column]
+
 
     else:
         X, Y = [], []
         if type == 'summary':
             print('use article summary')
-            for article_id, category, title, publisher in zip(df['article_id'], df['category'], df['title'], df['publisher']):
+            for article_id, category, text, publisher in zip(df['article_id'], df['category'], df['text'], df['publisher']):
                 if os.path.exists(train_v2_dir+'%d_summary.txt'%article_id):
                     with open(train_v2_dir+'%d_summary.txt'%article_id, 'r', encoding='utf-8') as f:
                         reader = csv.reader(f)
-                        text = title+'\n'+next(reader)[0]
+                        text = text+'\n'+next(reader)[0]
                         X.append([text, publisher])
                         Y.append(category)
                 elif include_download_fail:
-                    text = title
                     X.append([text, publisher])
                     Y.append(category)
 
         else:
             print('use article text')
-            for article_id, category, title, publisher in zip(df['article_id'], df['category'], df['title'],
+            for article_id, category, text, publisher in zip(df['article_id'], df['category'], df['text'],
                                                               df['publisher']):
                 if os.path.exists(train_v2_dir+'%d_text.txt'%article_id):
                     with open(train_v2_dir+'%d_text.txt'%article_id, 'r', encoding='utf-8') as f:
                         reader = csv.reader(f)
-                        text = title + '\n' + next(reader)[0]
+                        text = text + '\n' + next(reader)[0]
                         X.append([text, publisher])
                         Y.append(category)
                 elif include_download_fail:
-                    text = title
                     X.append([text, publisher])
                     Y.append(category)
-        X = pd.DataFrame(X, columns=x_columns)
+        X = pd.DataFrame(X, columns=x_new_col)
         Y = pd.DataFrame(Y, columns=y_column)
     Y = Y['category']
     print('using {0} training data'.format(len(X)))
@@ -76,41 +77,58 @@ def load_train_dataset(use_title_only = True, type = 'summary', include_download
 
 
 from sklearn.model_selection import train_test_split
-X, Y = load_train_dataset(use_title_only=False, type='text', include_download_fail=True)
-X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size=0.20)
+X_train_v2, Y_train_v2 = load_train_dataset(use_title_only=True, type='summary', include_download_fail=False)
+X_train, X_val, y_train, y_val = train_test_split(X_train_v2, Y_train_v2, test_size=0.30)
 
 
 ############## preprocess(hacking TfidfVectorizer) ################
-from custom_transformers import TextTfidfVectorizer, PublisherTfidfVectorizer,NumberOfWordsExtractor
+from custom_transformers import TextTfidfVectorizer, PublisherTfidfVectorizer,NumberOfWordsExtractor, TextCountVectorizer
 
-vect = TextTfidfVectorizer(ngram_range=(1,3), max_df=.95, min_df=.0025, use_idf=True, norm='l2')
+def get_vect(X, y=None):
+    ############ tfidf
+    # vect = TextTfidfVectorizer(ngram_range=(1,3), max_df=.95, min_df=.0025, use_idf=True, norm='l2')
 
-########### fit all data
-vect.fit(X, y=None)
+    ############ bow
+    vect = TextCountVectorizer(ngram_range=(1, 3), max_df=.95, min_df=0.0024)
 
-########### fit training data
-#vect.fit(X_train, y=None)
+    ########### fit all data
+    vect.fit(X, y=None)
 
-features = vect.get_feature_names()
-for feature in features:
-    print(feature)
-print('feature counts: {0}'.format(len(features)))
+    ########### fit training data
+    # vect.fit(X_train, y=None)
+
+    features = vect.get_feature_names()
+    for feature in features:
+        print(feature)
+    print('feature counts: {0}'.format(len(features)))
+    return vect
+
+
+vect = get_vect(X_train_v2, Y_train_v2)
 
 ##################### model selection and training ##################
 
 from sklearn.svm import LinearSVC, SVC
 from sklearn.model_selection import GridSearchCV
 from sklearn.naive_bayes import GaussianNB, MultinomialNB
-from sklearn.ensemble import RandomForestClassifier, VotingClassifier, GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier, GradientBoostingClassifier, AdaBoostClassifier, ExtraTreesClassifier
 from sklearn.metrics import accuracy_score, precision_score, classification_report, confusion_matrix, roc_auc_score, make_scorer, f1_score
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier, GradientBoostingClassifier
 
-def print_scores(y_test, preds, y_train, preds_train):
-    print("Accuracy test:", accuracy_score(y_test, preds))
-    print("Accuracy train:", accuracy_score(y_train, preds_train))
-    print(classification_report(y_test, preds))
-    print(confusion_matrix(y_test, preds))
+
+def print_scores(y_val, preds, y_train, preds_train):
+    print("f1 val:", f1_score(y_val, preds, average='micro'))
+    print("f1 train:", f1_score(y_train, preds_train, average='micro'))
+    print(classification_report(y_val, preds))
+    print(confusion_matrix(y_val, preds))
+
+def train_and_predict(clf, X_train, y_train, X_test):
+    clf = clf.fit(X_train, y_train)
+    preds = clf.predict(X_test)
+    preds_train = clf.predict(X_train)
+    return clf, preds_train, preds
+
 
 run_gridcv = False
 if run_gridcv:
@@ -130,93 +148,67 @@ if run_gridcv:
     pipe = Pipeline([
         ('features', FeatureUnion([
             ('text', vect),
-            ('publisher', PublisherTfidfVectorizer(ngram_range=(1, 1), max_df=.95, use_idf=True, norm='l2')),
             ('word_counts', NumberOfWordsExtractor('text'))
-        ], transformer_weights=None)),
+        ], transformer_weights={'text': 1, 'word_counts': 0.2})),
         ('gbc', GradientBoostingClassifier())
     ])
 
-    # grid_search = pipe
-    # grid_search.fit(X_train, y_train)
-
-    grid_search = GridSearchCV(pipe, params, n_jobs=-1, verbose=1, scoring=scoring, refit='F1', cv=5)
+    grid_search = pipe
     grid_search.fit(X_train, y_train)
-    print ('Best score: %0.3f' % grid_search.best_score_)
-    print ('Best parameters set:')
-    best_parameters = grid_search.best_estimator_.get_params()
-    print (best_parameters)
 
-    preds = grid_search.predict(X_test)
+    # grid_search = GridSearchCV(pipe, params, n_jobs=-1, verbose=1, scoring='f1', cv=5)
+    # grid_search.fit(X_train, y_train)
+    # print ('Best score: %0.3f' % grid_search.best_score_)
+    # print ('Best parameters set:')
+    # best_parameters = grid_search.best_estimator_.get_params()
+    # print (best_parameters)
+
+    preds = grid_search.predict(X_val)
     preds_train = grid_search.predict(X_train)
-    print_scores(y_test, preds, y_train, preds_train)
+    print_scores(y_val, preds, y_train, preds_train)
 
 
-run = True
+run = False
 if run:
     X_train_tdidf = vect.transform(X_train)
-    X_test_tdidf = vect.transform(X_test)
+    X_val_tdidf = vect.transform(X_val)
 
-    print ('******** linear SVC ********')
-    clf1 = SVC(kernel='linear', probability=True)
-    clf1 = clf1.fit(X_train_tdidf, y_train)
-    preds = clf1.predict(X_test_tdidf)
-    preds_train = clf1.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
+    print('******** linear SVC ********')
+    linear_svc = LinearSVC()
+    linear_svc, preds_train, preds = train_and_predict(linear_svc, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
     print ('******** Balanced linear SVC ********')
-    clf5 = SVC(kernel='linear', probability=True, class_weight='balanced')
-    clf5 = clf5.fit(X_train_tdidf, y_train)
-    preds = clf5.predict(X_test_tdidf)
-    preds_train = clf5.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
+    svc_balance = SVC(kernel='linear', probability=True, class_weight='balanced')
+    svc_balance, preds_train, preds = train_and_predict(svc_balance, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
     print ('******** MultinomialNB ********')
-    clf2 = MultinomialNB()
-    clf2 = clf2.fit(X_train_tdidf, y_train)
-    preds = clf2.predict(X_test_tdidf)
-    preds_train = clf2.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
-
+    multinomial_nb = MultinomialNB()
+    multinomial_nb, preds_train, preds = train_and_predict(multinomial_nb, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
     print ('******** RandomForest ********')
-    clf3 = RandomForestClassifier(n_estimators=40)
-    clf3 = clf3.fit(X_train_tdidf, y_train)
-    preds = clf3.predict(X_test_tdidf)
-    preds_train = clf3.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
+    rf = RandomForestClassifier(n_estimators=40)
+    rf, preds_train, preds = train_and_predict(rf, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
     print ('******** Balanced RandomForest ********')
-    clf6 = RandomForestClassifier(class_weight='balanced')
-    clf6 = clf6.fit(X_train_tdidf, y_train)
-    preds = clf6.predict(X_test_tdidf)
-    preds_train = clf6.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
-
+    rf_balance = RandomForestClassifier(class_weight='balanced')
+    rf_balance, preds_train, preds = train_and_predict(rf_balance, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
     print ('******** GradientBoostingClassifier ********')
-    clf4 = GradientBoostingClassifier()
-    clf4 = clf4.fit(X_train_tdidf, y_train)
-    preds = clf4.predict(X_test_tdidf)
-    preds_train = clf4.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
-
+    gb = GradientBoostingClassifier()
+    gb, preds_train, preds = train_and_predict(gb, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
     print ('******** VotingClassifier ********')
-    eclf = VotingClassifier(estimators=[
-           ('linearsvc', clf1), ('nb', clf2), ('rf', clf3), ('gb', clf4)],
-            weights=[2,1,2,1],
-           flatten_transform=True)
-    eclf = eclf.fit(X_train_tdidf, y_train)
-    preds = eclf.predict(X_test_tdidf)
-    preds_train = eclf.predict(X_train_tdidf)
-
-    print_scores(y_test, preds, y_train, preds_train)
+    voting = VotingClassifier(estimators=[
+           ('linear_svc', linear_svc), ('multinomial_nb', multinomial_nb), ('rf', rf), ('gb', gb)],
+            weights=[2,1,2,1], flatten_transform=True)
+    voting, preds_train, preds = train_and_predict(voting, X_train_tdidf, y_train, X_val_tdidf)
+    print_scores(y_val, preds, y_train, preds_train)
 
 
 # https://elitedatascience.com/imbalanced-classes
@@ -224,55 +216,131 @@ if run:
 
 
 ####################### imbalance learn ####################################
-imb_run = True
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.combine import SMOTEENN
+from imblearn.ensemble import BalancedRandomForestClassifier, BalancedBaggingClassifier
+from imblearn.pipeline import make_pipeline as make_pipeline_imb
+from imblearn.metrics import classification_report_imbalanced
+imb_run = False
 if imb_run:
-    print ('****************** imbalance learn ****************')
-    from imblearn.under_sampling import RandomUnderSampler
-    from imblearn.over_sampling import RandomOverSampler
-    from imblearn.combine import SMOTEENN
-    from imblearn.ensemble import BalancedRandomForestClassifier, BalancedBaggingClassifier
-    from imblearn.pipeline import make_pipeline as make_pipeline_imb
-    from imblearn.metrics import classification_report_imbalanced
+    print('****************** imbalance learn ****************')
+
     clf = RandomForestClassifier()
-    print ('************** RandomUnderSampler ***********')
+
+    print('************** RandomUnderSampler ***********')
     pipe = make_pipeline_imb(vect,
                              RandomUnderSampler(random_state=777),
                              clf)
     pipe.fit(X_train, y_train)
-    preds = pipe.predict(X_test)
+    preds = pipe.predict(X_val)
     preds_train = pipe.predict(X_train)
-    print(classification_report_imbalanced(y_test, preds))
+    print(classification_report_imbalanced(y_val, preds))
 
-    print ('************** RandomOverSampler ***********')
+    print('************** RandomOverSampler ***********')
     pipe = make_pipeline_imb(vect,
                              RandomOverSampler(random_state=777),
                              clf)
     pipe.fit(X_train, y_train)
-    preds = pipe.predict(X_test)
+    preds = pipe.predict(X_val)
     preds_train = pipe.predict(X_train)
-    print(classification_report_imbalanced(y_test, preds))
+    print(classification_report_imbalanced(y_val, preds))
 
-    print ('************** SMOTEENN(combine) ***********')
+    print('************** SMOTEENN(combine) ***********')
     pipe = make_pipeline_imb(vect,
                              SMOTEENN(random_state=42),
                              clf)
     pipe.fit(X_train, y_train)
-    preds = pipe.predict(X_test)
+    preds = pipe.predict(X_val)
     preds_train = pipe.predict(X_train)
-    print(classification_report_imbalanced(y_test, preds))
+    print(classification_report_imbalanced(y_val, preds))
 
-    print ('************** BalancedRandomForestClassifier(ensemble) ***********')
+    print('************** BalancedRandomForestClassifier(ensemble) ***********')
     pipe = make_pipeline_imb(vect,
                              BalancedRandomForestClassifier(max_depth=40))
     pipe.fit(X_train, y_train)
-    preds = pipe.predict(X_test)
+    preds = pipe.predict(X_val)
     preds_train = pipe.predict(X_train)
-    print(classification_report_imbalanced(y_test, preds))
+    print(classification_report_imbalanced(y_val, preds))
 
-    print ('************** BalancedBaggingClassifier(ensemble) ***********')
+    print('************** BalancedBaggingClassifier(ensemble) ***********')
     pipe = make_pipeline_imb(vect,
                              BalancedBaggingClassifier(random_state=42))
     pipe.fit(X_train, y_train)
-    preds = pipe.predict(X_test)
+    preds = pipe.predict(X_val)
     preds_train = pipe.predict(X_train)
-    print(classification_report_imbalanced(y_test, preds))
+    print(classification_report_imbalanced(y_val, preds))
+
+
+#################### test data result ######################
+import numpy as np
+def save_pred_result(name='', preds = []):
+    result_dir = 'results/'
+    filename = 'sampleSubmission_v2_%s.csv'%name
+    y = [[i+1, preds[i]] for i in range(len(preds))]
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+    np.savetxt(result_dir+filename, y, header='article_id,category', delimiter=',', fmt='%d', comments='')
+
+X_combined = df_combined[['text']]
+X_test = df_test[['text']]
+
+vect = TextCountVectorizer(ngram_range=(1, 3), max_df=.95, min_df=0.001)
+vect.fit(X_combined, y=None)
+features = vect.get_feature_names()
+for feature in features:
+    print(feature)
+print('feature counts: {0}'.format(len(features)))
+
+X_train = vect.transform(X_train_v2)
+X_test = vect.transform(X_test)
+y_train = Y_train_v2
+
+# imbalance learn resample
+# sampler = RandomOverSampler(random_state=777)
+# X_train, y_train = sampler.fit_resample(X_train, y_train)
+
+print('******** linear SVC ********')
+linear_svc = LinearSVC()
+linear_svc, preds_train, preds = train_and_predict(linear_svc, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('linear_svc', preds)
+
+print ('******** Balanced linear SVC ********')
+svc_balance = SVC(kernel='linear', probability=True, class_weight='balanced')
+svc_balance, preds_train, preds = train_and_predict(svc_balance, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('linear_svc_balance', preds)
+
+print ('******** MultinomialNB ********')
+multinomial_nb = MultinomialNB()
+multinomial_nb, preds_train, preds = train_and_predict(multinomial_nb, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('nb', preds)
+
+print ('******** RandomForest ********')
+rf = RandomForestClassifier(n_estimators=40)
+rf, preds_train, preds = train_and_predict(rf, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('rf', preds)
+
+print ('******** Balanced RandomForest ********')
+rf_balance = RandomForestClassifier(class_weight='balanced')
+rf_balance, preds_train, preds = train_and_predict(rf_balance, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('rf_balance', preds)
+
+print ('******** GradientBoostingClassifier ********')
+gb = GradientBoostingClassifier()
+gb, preds_train, preds = train_and_predict(gb, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('gb', preds)
+
+print ('******** VotingClassifier ********')
+# [2,1,2,1]
+voting = VotingClassifier(estimators=[
+       ('linear_svc', linear_svc), ('multinomial_nb', multinomial_nb), ('rf', rf), ('gb', gb)],
+        weights=[1,1,1,2], flatten_transform=True)
+voting, preds_train, preds = train_and_predict(voting, X_train, y_train, X_test)
+print(classification_report(y_train, preds_train))
+save_pred_result('voting', preds)
